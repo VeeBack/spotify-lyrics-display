@@ -14,6 +14,7 @@ app.use('/api', proxy('https://gew4-spclient.spotify.com'))
 app.use('/open', proxy('https://open.spotify.com', {
   proxyReqOptDecorator: function (proxyReqOpts, srcReq) {
     proxyReqOpts.headers['Referer'] = 'https://open.spotify.com'
+    return proxyReqOpts
   }
 }))
 app.use('/spclient', proxy('https://spclient.wg.spotify.com'))
