@@ -1,0 +1,337 @@
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+<style>
+  body {
+    margin: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+
+  .main {
+    display: grid;
+    height: 100vh;
+    grid-template-columns: auto;
+    grid-template-rows: auto 100px;
+  }
+
+  .lyrics {
+    color: #fff;
+    padding: 20px;
+    overflow: auto;
+    font-family: "Comic Sans MS", "Comic Sans", cursive;
+  }
+
+  .player {
+    background-color: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-direction: row;
+    gap: 32px;
+  }
+
+  .lyric {
+    font-size: 48px;
+    font-weight: 600;
+    line-height: 1.5;
+  }
+
+  .past {
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  .current {
+    color: #fff;
+  }
+</style>
+
+<div id="app">
+  <div v-if="accessToken" class="main">
+    <div v-if="colors" class="lyrics" :style="{
+      backgroundColor: '#' + ('000000' + colors.backgroundColor.toString(16)).substr(-6),
+      color: '#' + ('000000' + colors.text.toString(16)).substr(-6),
+    }">
+      <div v-for="(line, index) in currentLyrics.lyrics.lines" :id="'line-' + index" @click="seek(line.startTimeMs)"
+        :class="index < currentLine ? 'past' : index > currentLine ? 'upcoming' : 'current'" class="lyric">
+        {{ line.words }}
+      </div>
+    </div>
+    <div class="player">
+      <img :src="currentTrack.album.images[0].url" width="100px">
+      <h1>{{ currentTrack.name }}</h1>
+    </div>
+  </div>
+  <div v-else>
+    <h1>Not logged in</h1>
+    <fieldset>
+      <legend>Login</legend>
+      <input v-model="input" placeholder="Access Token or Cookie">
+      <button @click="login">Login</button>
+      <!-- hint -->
+      <p>
+        <b>Cookie</b> refers to the <code>sp_cd</code> cookie. Please prefix the cookie value with <code>sp_cd=</code>
+      </p>
+    </fieldset>
+    <a href="https://open.spotify.com/get_access_token" target="_blank">
+      <button>Get access token</button>
+    </a>
+  </div>
+</div>
+
+<script>
+  const { createApp, ref, watch } = Vue
+
+  function genHexString(len) {
+    const hex = '0123456789ABCDEF';
+    let output = '';
+    for (let i = 0; i < len; ++i) {
+      output += hex.charAt(Math.floor(Math.random() * hex.length));
+    }
+    return output;
+  }
+
+  createApp({
+    setup() {
+      const accessToken = ref(localStorage.getItem('accessToken') || null)
+      const input = ref('')
+      const websocket = ref(null)
+      const interval = ref(null)
+      const deviceid = ref(null)
+      const currentTrackId = ref(null)
+      const currentTrack = ref(null)
+      const currentLyrics = ref(null)
+      const colors = ref(null)
+      const currentLine = ref(-1)
+      const startedPlaying = ref(0)
+      const animationFrame = ref(null)
+      const currentPlayer = ref(null)
+
+      async function seek(ms) {
+        await fetch(`/api/connect-state/v1/player/command/from/${deviceid.value}/to/${currentPlayer.value}`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${accessToken.value}`,
+          },
+          body: JSON.stringify({
+            command: {
+              value: ms,
+              endpoint: 'seek_to',
+            }
+          }),
+        })
+      }
+
+      watch(currentTrackId, async (value) => {
+        if (!value) return
+
+        const track = await (await fetch('/oapi/v1/tracks/' + value, {
+          headers: {
+            authorization: `Bearer ${accessToken.value}`,
+          },
+        })).json()
+        console.log(track)
+        currentTrack.value = track
+      })
+
+      function apiFetch(path, options = {}) {
+        return fetch(path, {
+          ...options,
+          headers: {
+            ...options.headers,
+            authorization: `Bearer ${accessToken.value}`,
+          },
+        })
+      }
+
+      window.apiFetch = apiFetch
+
+      async function fetchToken(value) {
+        await fetch('/open/get_access_token').then(res => res.json()).then(json => {
+          accessToken.value = json.accessToken
+        })
+      }
+
+      fetchToken()
+
+      function login() {
+        if (input.value.startsWith('sp_cd=')) {
+          document.cookie = input.value
+          fetchToken()
+          return
+        }
+        localStorage.setItem('accessToken', input.value)
+        accessToken.value = input.value
+      }
+
+      function updateLyrics() {
+        if (!currentLyrics.value) return
+        const now = Date.now()
+        const elapsed = now - startedPlaying.value
+        const line = currentLyrics.value.lyrics.lines.slice().reverse().find((line, index) => {
+          const lyricStartMs = line.startTimeMs
+
+          return lyricStartMs <= elapsed
+        })
+        let newLine = -1;
+        if (line)
+          newLine = currentLyrics.value.lyrics.lines.indexOf(line)
+        if (newLine != currentLine.value) {
+          currentLine.value = newLine
+          const element = document.getElementById('line-' + (newLine == -1 ? 0 : newLine))
+          if (element) {
+            element.scrollIntoView({
+              behavior: 'smooth',
+              block: 'center',
+            })
+          }
+        }
+
+        animationFrame.value = requestAnimationFrame(updateLyrics)
+      }
+
+      watch(currentTrack, async (value) => {
+        cancelAnimationFrame(animationFrame.value)
+        if (!value) return
+        console.log(value, value.album.images[0].url)
+        const res = await (await fetch(`/spclient/color-lyrics/v2/track/${value.id}/image/${encodeURIComponent(value.album.images[0].url)}?format=json&vocalRemoval=false&market=from_token`, {
+          headers: {
+            authorization: `Bearer ${accessToken.value}`,
+            'app-platform': 'WebPlayer',
+          },
+        })).json()
+        currentLyrics.value = res
+        colors.value = {
+          backgroundColor: (16777216 + res.colors.background),
+          text: (16777216 + res.colors.text),
+          highlight: (16777216 + res.colors.highlight),
+        }
+        console.log(res)
+        requestAnimationFrame(updateLyrics)
+      })
+
+      watch(accessToken, (value) => {
+        if (!value) return
+
+        if (websocket.value) {
+          websocket.value.close()
+          clearInterval(interval.value)
+        }
+
+        const socketURL = new URL(window.origin)
+        socketURL.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        socketURL.searchParams.set('access_token', value)
+        websocket.value = new WebSocket(socketURL.href)
+        window.websocket = websocket.value
+
+        websocket.value.onopen = () => {
+          console.log('Connected to websocket')
+          interval.value = setInterval(() => {
+            websocket.value.send(JSON.stringify({
+              type: 'ping'
+            }))
+          }, 30000)
+        }
+
+        websocket.value.onmessage = async (msg) => {
+          const data = JSON.parse(msg.data)
+          console.log(data)
+
+          if (data.type == 'pong') return
+
+          if (data.type == 'message' && data.payloads) {
+            for (const payload of data.payloads) {
+              if (payload.cluster && payload.cluster.player_state) {
+                currentTrackId.value = payload.cluster.player_state.track.uri.split(':')[2]
+                startedPlaying.value = payload.cluster.player_state.timestamp - payload.cluster.player_state.position_as_of_timestamp
+                currentPlayer.value = payload.cluster.active_device_id
+              }
+            }
+          }
+
+          if (data.headers && data.headers['Spotify-Connection-Id']) {
+            await fetch('/api/track-playback/v1/devices', {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${value}`,
+              },
+              body: JSON.stringify({
+                device: {
+                  brand: "spotify",
+                  "capabilities": {
+                    "change_volume": true,
+                    "enable_play_token": true,
+                    "supports_file_media_type": true,
+                    "play_token_lost_behavior": "pause",
+                    "disable_connect": false,
+                    "audio_podcasts": true,
+                    "video_playback": true,
+                    "manifest_formats": ["file_ids_mp3", "file_urls_mp3", "manifest_ids_video", "file_urls_external", "file_ids_mp4", "file_ids_mp4_dual"]
+                  },
+                  "device_id": deviceid.value,
+                  "device_type": "computer",
+                  "metadata": {},
+                  "model": "web_player",
+                  "name": "Vee Player (Chrome)",
+                  "platform_identifier": "web_player chrome undefined;chrome 120.0.0.0;desktop",
+                  "is_group": false
+                },
+                "outro_endcontent_snooping": false,
+                "connection_id": data.headers['Spotify-Connection-Id'],
+                "client_version": "harmony:4.38.2-dfaa9747",
+                "volume": 65535
+              }),
+            })
+            const state = await (await fetch('/api/connect-state/v1/devices/hobs_' + deviceid.value, {
+              method: 'PUT',
+              headers: {
+                authorization: `Bearer ${value}`,
+                'X-Spotify-Connection-Id': data.headers['Spotify-Connection-Id'],
+              },
+              body: JSON.stringify({
+                member_type: "CONNECT_STATE",
+                device: {
+                  device_info: {
+                    capabilities: {
+                      can_be_player: false,
+                      hidden: true,
+                      needs_full_player_state: true
+                    }
+                  }
+                }
+              }),
+            })).json()
+            console.log(state)
+            currentTrackId.value = state.player_state.track.uri.split(':')[2]
+            startedPlaying.value = parseInt(state.player_state.timestamp) - parseInt(state.player_state.position_as_of_timestamp)
+            currentPlayer.value = state.active_device_id
+            console.log(startedPlaying.value)
+          }
+        }
+
+        deviceid.value = genHexString(40)
+      }, {
+        immediate: true
+      })
+
+      watch(input, (value) => {
+        try {
+          if (value.includes('{')) {
+            const json = JSON.parse(value.substring(value.indexOf('{')), value.indexOf('}') + 1)
+            input.value = json.accessToken
+          }
+        } catch (e) { }
+      })
+
+      return {
+        accessToken,
+        input,
+        login,
+        currentTrack,
+        currentLine,
+        currentLyrics,
+        colors,
+        seek
+      }
+    }
+  }).mount('#app')
+</script>
