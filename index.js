@@ -20,6 +20,6 @@ server.on('upgrade', function (req, socket, head) {
   dealerProxy.ws(req, socket, head);
 })
 
-server.listen(3000, () => {
+server.listen(process.env.SERVER_PORT || 3000, () => {
   console.log('Listening on port 3000')
 })
