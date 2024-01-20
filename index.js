@@ -11,7 +11,11 @@ const dealerProxy = httpProxy.createProxyServer({ target: 'https://gew4-dealer.s
 app.use(express.static('public'))
 
 app.use('/api', proxy('https://gew4-spclient.spotify.com'))
-app.use('/open', proxy('https://open.spotify.com'))
+app.use('/open', proxy('https://open.spotify.com', {
+  proxyReqOptDecorator: function (proxyReqOpts, srcReq) {
+    proxyReqOpts.headers['Referer'] = 'https://open.spotify.com'
+  }
+}))
 app.use('/spclient', proxy('https://spclient.wg.spotify.com'))
 app.use('/oapi', proxy('https://api.spotify.com'))
 
